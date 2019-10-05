@@ -64,6 +64,7 @@ int main(int argc, char **argv)
 	    ROS_INFO("Competition started!");
 	}
 
+	// Processing Order part:
 	osrf_gear::GetMaterialLocations srv;
 
 	ros::ServiceClient get_location_client = n.serviceClient<osrf_gear::GetMaterialLocations>("/ariac/material_locations");
@@ -102,13 +103,17 @@ int main(int argc, char **argv)
 			
 			geometry_msgs::Pose pose; // save a pose for moving arm part
 			// Checking a part using the logical camera
+			int n = 0;
 			for (long unsigned int i = 0; i < logical_cam_image.models.size(); i++ ) {
 				osrf_gear::Model m = logical_cam_image.models[i];
 				if (strcmp(m.type.c_str(), object_type) == 0){
 					ROS_INFO("Object: %s | Location: %f, %f, %f | Pose: %f, %f, %f, %f", object_type, 
 						m.pose.position.x, m.pose.position.y, m.pose.position.z,
 						m.pose.orientation.x, m.pose.orientation.y, m.pose.orientation.z, m.pose.orientation.w);
-					pose = m.pose;
+					n++;
+					if (n = 3) {
+						pose = m.pose; //chose the third part that is observed from the camera
+					}
 				}
 			}
 			
@@ -131,6 +136,8 @@ int main(int argc, char **argv)
 			// Copy pose from the logical camera.
 			part_pose.pose = pose;
 
+			tf2::doTransform(part_pose, goal_pose, tfStamped);
+
 			// Add height to the goal pose.
 			goal_pose.pose.position.z += 0.10; // 10 cm above the part
 			// Tell the end effector to rotate 90 degrees around the y-axis (in quaternions… more on quaternions later in the semester).
@@ -138,8 +145,6 @@ int main(int argc, char **argv)
 			goal_pose.pose.orientation.x = 0.0;
 			goal_pose.pose.orientation.y = 0.707;
 			goal_pose.pose.orientation.z = 0.0;
-
-			tf2::doTransform(part_pose, goal_pose, tfStamped);
 
 			// Set the desired pose for the arm in the arm controller.
 			move_group.setPoseTarget(goal_pose);
