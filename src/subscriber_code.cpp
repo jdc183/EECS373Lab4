@@ -5,22 +5,19 @@
 #include "osrf_gear/GetMaterialLocations.h"
 #include "osrf_gear/LogicalCameraImage.h"
 #include <stdlib.h>
-/*
+
 // MoveIt header files
-#include "moveit/move_group_interface/move_group_interface.h"
-#include "moveit/planning_scene_interface/planning_scene_interface.h"
+#include <moveit/move_group_interface/move_group_interface.h>
+#include <moveit/planning_scene_interface/planning_scene_interface.h>
+
 // Transformation header files
 #include "tf2_ros/transform_listener.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.h"
 #include "geometry_msgs/TransformStamped.h"
-*/
+
 // Declaring a vector of a data type.
 std::vector<osrf_gear::Order> order_vector;
 osrf_gear::LogicalCameraImage logical_cam_image;
-// Declare the transformation buffer to maintain a list of transformations
-//tf2_ros::Buffer tfBuffer;
-// Instantiate a listener that listens to the tf and tf_static topics and to update the buffer.
-//tf2_ros::TransformListener tfListener(tfBuffer);
 
 
 void camCallback(const osrf_gear::LogicalCameraImage& image){
@@ -71,42 +68,91 @@ int main(int argc, char **argv)
 
 	ros::ServiceClient get_location_client = n.serviceClient<osrf_gear::GetMaterialLocations>("/ariac/material_locations");
 
+	// Declare the transformation buffer to maintain a list of transformations
+	tf2_ros::Buffer tfBuffer;
+	// Instantiate a listener that listens to the tf and tf_static topics and to update the buffer.
+	tf2_ros::TransformListener tfListener(tfBuffer);
+
+	moveit::planning_interface::MoveGroupInterface move_group("manipulator");
 
 	ros::Rate loop_rate(10);
 	while (ros::ok())
 	{
 		if (!order_vector.empty())
 		{
-			// indicate the type of the first object in the order, which storage units contain the object type.	
+			//Indicate the type of the first object in the order and the storage units contain the object type.	
 			const char* object_type = order_vector[0].kits[0].objects[0].type.c_str();
 			//ROS_INFO("%s",object_type.c_str());
 
 			srv.request.material_type = object_type;
 
+			// Getting the location of the part
 			if (get_location_client.call(srv))
 			{
+				//Showing all the storage units that currently hold the part
 				for(int i = 0; i < srv.response.storage_units.size(); i++) {
 					const char* location = srv.response.storage_units[i].unit_id.c_str();
 					ROS_INFO("location %i: %s", i+1 ,location);
 				}
 			}
-
 			else 
 			{
 				ROS_WARN("can't get location");
 			}
 			
+			geometry_msgs::Pose pose; // save a pose for moving arm part
+			// Checking a part using the logical camera
 			for (long unsigned int i = 0; i < logical_cam_image.models.size(); i++ ) {
 				osrf_gear::Model m = logical_cam_image.models[i];
 				if (strcmp(m.type.c_str(), object_type) == 0){
 					ROS_INFO("Object: %s | Location: %f, %f, %f | Pose: %f, %f, %f, %f", object_type, 
 						m.pose.position.x, m.pose.position.y, m.pose.position.z,
 						m.pose.orientation.x, m.pose.orientation.y, m.pose.orientation.z, m.pose.orientation.w);
+					pose = m.pose;
 				}
 			}
 			
+			//Transform to find the location of the part in the world
+			// Retrieve the transformation
+			geometry_msgs::TransformStamped tfStamped;
+			try {
+				// tf2_ros::Buffer.lookupTransform(“to_frame”, “from_frame”, “how_recent”, “how_long_to_wait”);
+				tfStamped = tfBuffer.lookupTransform(/*move_group.getPlanningFrame().c_str()*/"world",
+					"logical_camera_frame", ros::Time(0.0), ros::Duration(1.0));
+				ROS_DEBUG("Transform to [%s] from [%s]", tfStamped.header.frame_id.c_str(), tfStamped.child_frame_id.c_str());
+			} 
+			catch (tf2::TransformException &ex) {
+				ROS_ERROR("%s", ex.what());
+			}
+			
+			
+			// Create variables
+			geometry_msgs::PoseStamped part_pose, goal_pose;
+			// Copy pose from the logical camera.
+			part_pose.pose = pose;
 
-		}
+			// Add height to the goal pose.
+			goal_pose.pose.position.z += 0.10; // 10 cm above the part
+			// Tell the end effector to rotate 90 degrees around the y-axis (in quaternions… more on quaternions later in the semester).
+			goal_pose.pose.orientation.w = 0.707;
+			goal_pose.pose.orientation.x = 0.0;
+			goal_pose.pose.orientation.y = 0.707;
+			goal_pose.pose.orientation.z = 0.0;
+
+			tf2::doTransform(part_pose, goal_pose, tfStamped);
+
+			// Set the desired pose for the arm in the arm controller.
+			move_group.setPoseTarget(goal_pose);
+			// Instantiate and create a plan.
+			moveit::planning_interface::MoveGroupInterface::Plan the_plan;
+			// Create a plan based on the settings (all default settings now) in the_plan.
+			move_group.plan(the_plan);
+			// Planning does not always succeed. Check the output.
+
+			// In the event that the plan was created, execute it.
+			move_group.execute(the_plan);
+
+			}
 		loop_rate.sleep();
 		ros::spinOnce();
 	}
